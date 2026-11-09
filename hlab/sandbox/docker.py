@@ -1,8 +1,9 @@
 """Docker sandbox: one throwaway container per agent run, driven through the docker CLI."""
 import subprocess
+import threading
 
 DEFAULT_IMAGE = "python:3.12-slim"
-MAX_OUTPUT_BYTES = 1_000_000  # bounded in-container; tools.py trims further for the model
+MAX_OUTPUT_BYTES = 1_000_000  # host-side cap per exec/read; tools.py trims further for the model
 
 
 class SandboxError(RuntimeError):
@@ -15,7 +16,8 @@ class Sandbox:
         self.id = None
 
     def start(self):
-        args = ["docker", "run", "-d", "--label", "hlab=1", "-w", "/work",
+        # --log-driver none: writes to /proc/1/fd/1 would otherwise grow docker's log file on the host disk.
+        args = ["docker", "run", "-d", "--label", "hlab=1", "-w", "/work", "--log-driver", "none",
                 f"--cpus={self.cpus}", f"--memory={self.memory}", f"--pids-limit={self.pids}"]
         if not self.network:
             args += ["--network", "none"]
@@ -39,18 +41,27 @@ class Sandbox:
     def exec(self, command, timeout=120):
         """Run a bash command; returns (exit_code, combined stdout+stderr). Exit 124 = timed out."""
         # Kill inside the container: a client-side timeout alone would leave the process running there.
-        # In-container: merge stderr into stdout (docker exec ships them separately and their order races),
-        # and cap bytes with head so a runaway command can't flood host memory. Exit code is the command's own.
-        wrapper = f'bash -c "$1" 2>&1 | head -c {MAX_OUTPUT_BYTES}; exit "${{PIPESTATUS[0]}}"'
-        args = ["docker", "exec", self.id, "timeout", "-k", "5", str(timeout), "bash", "-c", wrapper, "_", command]
+        # Merge stderr in-container too: docker exec ships the two streams separately and their order races.
+        args = ["docker", "exec", self.id, "timeout", "-k", "5", str(timeout), "bash", "-c", "exec 2>&1\n" + command]
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        killer = threading.Timer(timeout + 30, p.kill)  # backstop if docker itself hangs
+        killer.start()
         try:
-            p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout + 30)
-        except subprocess.TimeoutExpired:
-            return 124, f"[timed out after {timeout}s]"
-        out = p.stdout.decode(errors="replace")
-        if p.returncode == 124:
-            out += f"\n[timed out after {timeout}s]"
-        return p.returncode, out
+            # Cap on the host: the command can reach other inherited fds, so no in-container limit is airtight.
+            data = p.stdout.read(MAX_OUTPUT_BYTES + 1)
+            truncated = len(data) > MAX_OUTPUT_BYTES
+            if truncated:
+                p.kill()
+            rc = p.wait()
+        finally:
+            killer.cancel()
+            p.stdout.close()
+        out = data[:MAX_OUTPUT_BYTES].decode(errors="replace")
+        if truncated:
+            return 141, out + f"\n[output exceeded {MAX_OUTPUT_BYTES} bytes; command killed]"
+        if rc == 124 or rc < 0:
+            return 124, out + f"\n[timed out after {timeout}s]"
+        return rc, out
 
     def write_file(self, path, content):
         script = 'mkdir -p "$(dirname "$1")" && cat > "$1"'

@@ -51,8 +51,10 @@ def test_exec_timeout_kills_process_in_container():
 
 def test_output_bounded_in_container():
     with Sandbox() as sb:
-        rc, out = sb.exec("yes", timeout=3)  # endless output must not pile up on the host
-        assert len(out) <= MAX_OUTPUT_BYTES + 100
+        # Endless output must not pile up on the host, including via an inherited fd that skips any in-container pipe.
+        for cmd in ("yes", "yes >&2", "yes > /proc/$PPID/fd/2"):
+            rc, out = sb.exec(cmd, timeout=20)
+            assert rc == 141 and len(out) <= MAX_OUTPUT_BYTES + 100, cmd
         sb.exec("head -c 3000000 /dev/zero > /work/big")
         assert len(sb.read_file("/work/big")) == MAX_OUTPUT_BYTES
 
