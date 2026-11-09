@@ -1,0 +1,58 @@
+# M0 smoke suite. Each task: instruction (to the agent), setup (run before), check (exit 0 = success),
+# solution (reference answer; the oracle model replays it to prove the task is solvable).
+# All run offline in the default image (python:3.12-slim).
+
+[[task]]
+id = "hello-file"
+category = "files"
+instruction = "Create the file /work/hello.txt whose content is exactly: hello world"
+setup = ""
+check = '''[ "$(cat /work/hello.txt)" = "hello world" ]'''
+solution = '''printf 'hello world' > /work/hello.txt'''
+
+[[task]]
+id = "fix-bug"
+category = "code"
+instruction = "The test in /work/test_calc.py fails. Fix the bug in /work/calc.py (do not edit the test) so that `python test_calc.py` passes."
+setup = '''
+printf 'def add(a, b):\n    return a - b\n' > /work/calc.py
+printf 'from calc import add\nassert add(2, 3) == 5\nassert add(-1, 1) == 0\nprint("ok")\n' > /work/test_calc.py
+'''
+check = '''cd /work && grep -q 'assert add(2, 3) == 5' test_calc.py && python test_calc.py'''
+solution = '''sed -i 's/a - b/a + b/' /work/calc.py'''
+
+[[task]]
+id = "count-rows"
+category = "data"
+instruction = "/work/data.csv has a header row. Write the number of data rows (excluding the header) to /work/answer.txt."
+setup = '''python -c "
+print('id,value')
+for i in range(137): print(f'{i},{i*i}')" > /work/data.csv'''
+check = '''[ "$(tr -d '[:space:]' < /work/answer.txt)" = "137" ]'''
+solution = '''echo $(( $(wc -l < /work/data.csv) - 1 )) > /work/answer.txt'''
+
+[[task]]
+id = "json-adults"
+category = "data"
+instruction = "/work/users.json is a list of users with name and age. Write the names of users aged 18 or over to /work/adults.txt, one per line, sorted alphabetically."
+setup = '''python -c "
+import json
+users = [('mia', 17), ('ari', 30), ('zoe', 18), ('bo', 4), ('kai', 61), ('lee', 12)]
+json.dump([{'name': n, 'age': a} for n, a in users], open('/work/users.json', 'w'))"'''
+check = '''[ "$(cat /work/adults.txt)" = "$(printf 'ari\nkai\nzoe')" ]'''
+solution = '''python -c "
+import json
+u = json.load(open('/work/users.json'))
+print('\n'.join(sorted(x['name'] for x in u if x['age'] >= 18)))" > /work/adults.txt'''
+
+[[task]]
+id = "find-token"
+category = "search"
+instruction = "Somewhere under /work/tree a file contains a line of the form TOKEN=<value>. Write just the value to /work/token.txt."
+setup = '''
+mkdir -p /work/tree/a/b/c /work/tree/d/e
+for i in 1 2 3 4 5; do echo "noise $i" > /work/tree/a/f$i.txt; echo "TOKEN_HINT=no" > /work/tree/d/e/g$i.log; done
+echo "TOKEN=Q7XK29PL" > /work/tree/a/b/c/.cfg
+'''
+check = '''[ "$(tr -d '[:space:]' < /work/token.txt)" = "Q7XK29PL" ]'''
+solution = '''grep -rhoE '^TOKEN=[A-Z0-9]+' /work/tree | cut -d= -f2 > /work/token.txt'''
