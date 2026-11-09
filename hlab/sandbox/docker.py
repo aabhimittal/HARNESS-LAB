@@ -2,6 +2,7 @@
 import subprocess
 
 DEFAULT_IMAGE = "python:3.12-slim"
+MAX_OUTPUT_BYTES = 1_000_000  # bounded in-container; tools.py trims further for the model
 
 
 class SandboxError(RuntimeError):
@@ -38,8 +39,10 @@ class Sandbox:
     def exec(self, command, timeout=120):
         """Run a bash command; returns (exit_code, combined stdout+stderr). Exit 124 = timed out."""
         # Kill inside the container: a client-side timeout alone would leave the process running there.
-        # Merge stderr into stdout in-container: docker exec ships them as separate streams and their order races.
-        args = ["docker", "exec", self.id, "timeout", "-k", "5", str(timeout), "bash", "-c", "exec 2>&1\n" + command]
+        # In-container: merge stderr into stdout (docker exec ships them separately and their order races),
+        # and cap bytes with head so a runaway command can't flood host memory. Exit code is the command's own.
+        wrapper = f'bash -c "$1" 2>&1 | head -c {MAX_OUTPUT_BYTES}; exit "${{PIPESTATUS[0]}}"'
+        args = ["docker", "exec", self.id, "timeout", "-k", "5", str(timeout), "bash", "-c", wrapper, "_", command]
         try:
             p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout + 30)
         except subprocess.TimeoutExpired:
@@ -57,7 +60,8 @@ class Sandbox:
             raise SandboxError(p.stderr.decode(errors="replace").strip())
 
     def read_file(self, path):
-        p = subprocess.run(["docker", "exec", self.id, "cat", "--", path], capture_output=True, timeout=60)
+        p = subprocess.run(["docker", "exec", self.id, "head", "-c", str(MAX_OUTPUT_BYTES), "--", path],
+                           capture_output=True, timeout=60)
         if p.returncode:
             raise SandboxError(p.stderr.decode(errors="replace").strip())
         return p.stdout.decode(errors="replace")

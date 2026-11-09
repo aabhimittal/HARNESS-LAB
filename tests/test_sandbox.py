@@ -5,6 +5,7 @@ import time
 import pytest
 
 from hlab.sandbox import Sandbox, SandboxError
+from hlab.sandbox.docker import MAX_OUTPUT_BYTES
 
 
 def _docker_ok():
@@ -46,6 +47,14 @@ def test_exec_timeout_kills_process_in_container():
         assert rc == 124 and "timed out" in out and time.monotonic() - t0 < 15
         procs = "for f in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < $f 2>/dev/null; echo; done"
         assert sb.exec(f"{procs} | grep -c '^sleep 30 $'")[1].strip() == "0"  # killed, not orphaned
+
+
+def test_output_bounded_in_container():
+    with Sandbox() as sb:
+        rc, out = sb.exec("yes", timeout=3)  # endless output must not pile up on the host
+        assert len(out) <= MAX_OUTPUT_BYTES + 100
+        sb.exec("head -c 3000000 /dev/zero > /work/big")
+        assert len(sb.read_file("/work/big")) == MAX_OUTPUT_BYTES
 
 
 def test_no_network():
