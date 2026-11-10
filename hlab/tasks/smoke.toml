@@ -1,9 +1,11 @@
 # M0 smoke suite. Each task: instruction (to the agent), setup (run before), check (exit 0 = success),
-# solution (reference answer; the oracle model replays it to prove the task is solvable).
+# outputs (paths the grader copies out of the agent's container; everything else is regenerated
+# by re-running setup, so setup must be deterministic), solution (reference answer; the oracle model replays it to prove the task is solvable).
 # All run offline in the default image (python:3.12-slim).
 
 [[task]]
 id = "hello-file"
+outputs = ["/work/hello.txt"]
 category = "files"
 instruction = "Create the file /work/hello.txt whose content is exactly: hello world"
 setup = ""
@@ -12,17 +14,19 @@ solution = '''printf 'hello world' > /work/hello.txt'''
 
 [[task]]
 id = "fix-bug"
+outputs = ["/work/calc.py"]
 category = "code"
 instruction = "The test in /work/test_calc.py fails. Fix the bug in /work/calc.py (do not edit the test) so that `python test_calc.py` passes."
 setup = '''
 printf 'def add(a, b):\n    return a - b\n' > /work/calc.py
 printf 'from calc import add\nassert add(2, 3) == 5\nassert add(-1, 1) == 0\nprint("ok")\n' > /work/test_calc.py
 '''
-check = '''cd /work && grep -q 'assert add(2, 3) == 5' test_calc.py && python test_calc.py'''
+check = '''[ "$(cd /work && untrusted python -c 'from calc import add; print(add(2, 3), add(-1, 1), add(10, 5))')" = "5 0 15" ]'''
 solution = '''sed -i 's/a - b/a + b/' /work/calc.py'''
 
 [[task]]
 id = "count-rows"
+outputs = ["/work/answer.txt"]
 category = "data"
 instruction = "/work/data.csv has a header row. Write the number of data rows (excluding the header) to /work/answer.txt."
 setup = '''python -c "
@@ -33,6 +37,7 @@ solution = '''echo $(( $(wc -l < /work/data.csv) - 1 )) > /work/answer.txt'''
 
 [[task]]
 id = "json-adults"
+outputs = ["/work/adults.txt"]
 category = "data"
 instruction = "/work/users.json is a list of users with name and age. Write the names of users aged 18 or over to /work/adults.txt, one per line, sorted alphabetically."
 setup = '''python -c "
@@ -47,6 +52,7 @@ print('\n'.join(sorted(x['name'] for x in u if x['age'] >= 18)))" > /work/adults
 
 [[task]]
 id = "find-token"
+outputs = ["/work/token.txt"]
 category = "search"
 instruction = "Somewhere under /work/tree a file contains a line of the form TOKEN=<value>. Write just the value to /work/token.txt."
 setup = '''

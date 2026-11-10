@@ -1,8 +1,12 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from hlab.design import fractional_factorial
+from hlab.report import main as report_main
 from hlab.run import load_tasks, run_one
+from hlab.run import main as run_main
 from tests.test_sandbox import pytestmark  # noqa: F401  (skip without docker)
 
 TASKS = load_tasks()
@@ -30,6 +34,83 @@ def test_oracle_passes_and_writes_trace(task, tmp_path):
 def test_null_model_fails(task, tmp_path):
     # Checks must not pass vacuously on an untouched container.
     assert not run_one(task, "null", 0, tmp_path)["success"]
+
+
+CORE = load_tasks("core")
+
+
+def _parallel(fn, items):
+    with ThreadPoolExecutor(8) as pool:
+        return list(pool.map(fn, items))
+
+
+def test_core_suite_is_solvable_and_not_vacuous(tmp_path):
+    assert len({t["id"] for t in TASKS + CORE}) == len(TASKS + CORE) == 20
+    oracle = _parallel(lambda t: run_one(t, "oracle", 0, tmp_path / "o"), CORE)
+    null = _parallel(lambda t: run_one(t, "null", 0, tmp_path / "n"), CORE)
+    assert [r["run_id"] for r in oracle if not r["success"]] == []
+    assert [r["run_id"] for r in null if r["success"]] == []
+
+
+def test_every_design_config_runs_end_to_end_resumes_and_reports(tmp_path, capsys):
+    """All 16 middleware stacks drive a real container; a rerun skips finished runs; the report builds."""
+    task = next(t for t in CORE if t["id"] == "three-parts")
+    results = _parallel(lambda c: run_one(task, "oracle", 0, tmp_path / "tr", c), fractional_factorial())
+    assert all(r["success"] for r in results) and len({r["run_id"] for r in results}) == 16
+    assert run_one(task, "oracle", 0, tmp_path / "tr", fractional_factorial()[5]).get("skipped")
+    ralph = _events(next(r["trace"] for r in results if "E+" in r["run_id"]))
+    assert any(e["event"] == "ralph_restart" for e in ralph)  # the loop really fires inside a real run
+    run_main(["-j", "4", "--model", "null", "--tasks", "smoke", "--out", str(tmp_path / "tr")])
+    report_main([str(tmp_path / "tr"), "--out", str(tmp_path / "rep")])
+    assert (tmp_path / "rep" / "index.html").exists()
+
+
+def test_every_task_declares_outputs():
+    assert all(t.get("outputs") and all(p.startswith("/work/") for p in t["outputs"]) for t in TASKS + CORE)
+
+
+TAMPER = {  # task id -> commands that fake a pass by rigging what an in-place check would trust
+    "log-errors": ["echo '2026 INFO [api] x' > /work/app.log", "echo '{}' > /work/errors.json"],
+    "write-tests": ["printf 'import unittest\\n' > /work/test_inventory.py",
+                    "echo 'raise SystemExit' > /work/inventory.py"],
+    "needle-output": ["printf 'print(\"id=31337 checksum=abc\")\\n' > /work/report.py", "echo abc > /work/checksum.txt"],
+    "csv-join": ["printf 'region,total\\n' > /work/region_totals.csv",
+                 "printf 'id,name,region\\n' > /work/customers.csv", "printf 'order_id,customer_id,amount\\n' > /work/orders.csv"],
+    # root in its own container: swap the interpreter for one that always succeeds
+    "two-bugs": ["printf '#!/bin/sh\\nexit 0\\n' > /usr/local/bin/python3.12"],
+    # agent code that exits 0 as soon as the check imports it
+    "fix-bug": ["printf 'import os\\nos._exit(0)\\n' > /work/calc.py"],
+    "slugify-spec": ["printf 'import os\\nos._exit(0)\\n' > /work/slugify.py"],
+    "speedup": ["printf 'import os\\nos._exit(0)\\n' > /work/slow.py"],
+}
+
+
+@pytest.mark.parametrize("task_id", TAMPER)
+def test_grader_ignores_tampering_in_agent_container(task_id, tmp_path, monkeypatch):
+    import hlab.run
+    from hlab.core.agent import ScriptedModel
+
+    monkeypatch.setattr(hlab.run, "make_model", lambda name, task: ScriptedModel(TAMPER[task_id]))
+    task = next(t for t in TASKS + CORE if t["id"] == task_id)
+    r = run_one(task, "tamper", 0, tmp_path)
+    assert not r["success"], f"tampering fooled the grader on {task_id}"
+
+
+def test_grader_rejects_symlinked_outputs_and_untrusted_code_cannot_touch_inputs(tmp_path, monkeypatch):
+    import hlab.run
+    from hlab.core.agent import ScriptedModel
+
+    task = {"id": "probe", "instruction": "", "setup": "echo secret > /work/expected.txt", "outputs": ["/work/out.txt"],
+            "check": '[ "$(cat /work/out.txt)" = secret ]', "solution": "cp /work/expected.txt /work/out.txt"}
+    real = hlab.run.make_model
+    monkeypatch.setattr(hlab.run, "make_model", lambda name, t: ScriptedModel(["ln -s /work/expected.txt /work/out.txt"])
+                        if name == "symlink" else real(name, t))
+    r = run_one(task, "symlink", 0, tmp_path / "a")
+    assert not r["success"] and "symlink" in _events(r["trace"])[-2]["output"]
+    assert run_one(task, "oracle", 0, tmp_path / "b")["success"]  # the honest copy passes
+    guard = {**task, "check": "untrusted sh -c 'echo hacked > /work/expected.txt' 2>/dev/null; "
+                              "[ \"$(cat /work/expected.txt)\" = secret ] && [ \"$(untrusted id -u)\" = 65534 ]"}
+    assert run_one(guard, "oracle", 0, tmp_path / "c")["success"]
 
 
 def test_model_error_is_a_failed_run_not_a_crash(tmp_path, monkeypatch):

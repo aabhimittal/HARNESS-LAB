@@ -1,4 +1,6 @@
 """Docker sandbox: one throwaway container per agent run, driven through the docker CLI."""
+import os
+import shlex
 import subprocess
 import threading
 
@@ -62,6 +64,21 @@ class Sandbox:
         if rc == 124 or rc < 0:
             return 124, out + f"\n[timed out after {timeout}s]"
         return rc, out
+
+    def copy_to(self, other, path):
+        """Copy a file or directory at `path` into the same place in another sandbox. Streams a tar between
+        two docker processes, so nothing is buffered on the host. Returns False if `path` doesn't exist."""
+        parent = os.path.dirname(path.rstrip("/")) or "/"
+        other.exec(f"mkdir -p {shlex.quote(parent)}")
+        src = subprocess.Popen(["docker", "cp", f"{self.id}:{path}", "-"], stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL)
+        try:
+            dst = subprocess.run(["docker", "cp", "-", f"{other.id}:{parent}"], stdin=src.stdout,
+                                 capture_output=True, timeout=300)
+        finally:
+            src.stdout.close()
+            src_rc = src.wait(timeout=300)
+        return src_rc == 0 and dst.returncode == 0
 
     def write_file(self, path, content):
         script = 'mkdir -p "$(dirname "$1")" && cat > "$1"'
