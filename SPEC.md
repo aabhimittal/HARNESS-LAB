@@ -71,6 +71,31 @@ trace store (JSONL per run) ─▶ analysis (statsmodels mixed model) ─▶ eff
 - Your implementation of a component may be worse than a production one, so effects measure your variant.
 - Task-set choice drives conclusions; report results per task category.
 
+## 9b. Design decisions taken while building (M1–M2)
+
+- **Design generators: E=BCD, F=ABC, G=ACD** (resolution IV). The textbook E=ABC aliases A×B with C×E. These
+  generators put the six interactions most likely to be real in six different alias chains: D×E (verification ×
+  Ralph), A×B, A×E, C×E, A×C and E×F.
+- **Not all 21 two-factor interactions are estimable.** 16 configs give 15 contrasts: 7 main effects plus 7
+  alias chains of three 2FIs each (and one chain of higher-order terms only). The model fits one term per chain
+  and reports it as the sum of the chain, e.g. `AB = CF = EG`. To split a chain, fold over on one factor.
+- **Fixed task effects instead of a random intercept.** statsmodels has no frequentist binomial mixed model.
+  Because every task sees every config, a task fixed effect targets the same within-task effect, with ordinary
+  Wald CIs. Tasks that always pass or always fail carry no within-task information and are dropped from the fit.
+- **Factor A has no "off" level** (both levels are compaction strategies), so its effect is summarize vs
+  query-aware keep, not compaction vs none. Below the threshold (60k estimated tokens) both levels are inert.
+- **Compaction and Ralph never edit history in place.** Both restart a fresh conversation with a handoff, because
+  current Claude models reject edited histories that replay thinking blocks.
+- **Factor G "off" inlines every skill** (rather than giving no skills), so the factor isolates the disclosure
+  mechanism, not access to the knowledge.
+- **Factor D never runs the hidden task check.** It asks the model to verify its own work, so the grader never
+  leaks into the agent.
+- **One step budget for everything.** Subagent steps, verification rounds and Ralph restarts all count against
+  `max_steps`, so loop factors can't win by buying extra compute.
+- **Seeds are replicates, not sampling seeds.** Current Claude models reject `temperature`.
+- **Power:** with τ (SD of a factor's effect across tasks) = 0.2, 40 tasks × 3 seeds detects about 8 pts at
+  p0 = 0.5. At equal cost more tasks beat more seeds (80×1 < 40×2), because τ only shrinks with tasks.
+
 ## 10. Verify before building
 
 Terminal-Bench task licensing and harness interface; sandbox resource limits; model pricing.

@@ -1,0 +1,370 @@
+# Core suite: harder than smoke, chosen so harness factors have something to bite on (huge outputs, many
+# requirements, independent subtasks, tests to write, exact formats). Same schema as smoke.toml.
+# Checks recompute answers from the task's own data where possible, so they don't hardcode generator output.
+
+[[task]]
+id = "log-errors"
+category = "data"
+instruction = "/work/app.log is a service log. Count the ERROR lines per service (the name in square brackets) and write the result to /work/errors.json as a JSON object mapping service name to count."
+setup = '''python - <<'EOF'
+import random
+r = random.Random(7)
+svcs = ["api", "auth", "billing", "db", "queue"]
+levels = ["INFO"] * 8 + ["WARN"] * 2 + ["ERROR"]
+with open("/work/app.log", "w") as f:
+    for i in range(20000):
+        f.write(f"2026-01-01T00:{i // 60 % 60:02d}:{i % 60:02d} {r.choice(levels)} [{r.choice(svcs)}] request {i} done\n")
+EOF'''
+check = '''python - <<'EOF'
+import collections, json, re
+c = collections.Counter(m.group(1) for l in open("/work/app.log") if (m := re.search(r" ERROR \[(\w+)\]", l)))
+assert json.load(open("/work/errors.json")) == dict(c)
+EOF'''
+solution = '''python - <<'EOF'
+import collections, json, re
+c = collections.Counter(m.group(1) for l in open("/work/app.log") if (m := re.search(r" ERROR \[(\w+)\]", l)))
+json.dump(dict(c), open("/work/errors.json", "w"))
+EOF'''
+
+[[task]]
+id = "two-bugs"
+category = "code"
+instruction = "/work/stats.py has bugs: mean() and median() give wrong answers for some inputs (median of an even-length list is the average of the two middle values). Fix them. /work/test_stats.py shows some expected behaviour."
+setup = '''
+printf 'def mean(xs):\n    return sum(xs) // len(xs)\n\n\ndef median(xs):\n    s = sorted(xs)\n    return s[len(s) // 2]\n' > /work/stats.py
+printf 'from stats import mean, median\nassert mean([1, 2, 3]) == 2\nassert median([3, 1, 2]) == 2\nprint("ok")\n' > /work/test_stats.py
+'''
+check = '''cd /work && python -c "
+from stats import mean, median
+assert mean([1, 2]) == 1.5 and mean([5]) == 5
+assert median([3, 1, 2]) == 2 and median([4, 1, 3, 2]) == 2.5 and median([7]) == 7
+"'''
+solution = '''cat > /work/stats.py <<'EOF'
+def mean(xs):
+    return sum(xs) / len(xs)
+
+
+def median(xs):
+    s = sorted(xs)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+EOF'''
+
+[[task]]
+id = "csv-join"
+category = "data"
+instruction = "/work/customers.csv (id,name,region) and /work/orders.csv (order_id,customer_id,amount) are CSV files with headers. Write /work/region_totals.csv with header region,total: the total order amount per region, rounded to 2 decimals, sorted by total descending."
+setup = '''python - <<'EOF'
+import csv, random
+r = random.Random(11)
+regions = ["North, East", "South", "West", "Central"]
+with open("/work/customers.csv", "w", newline="") as f:
+    w = csv.writer(f); w.writerow(["id", "name", "region"])
+    for i in range(1, 201):
+        w.writerow([i, f"Customer {i}, Ltd", r.choice(regions)])
+with open("/work/orders.csv", "w", newline="") as f:
+    w = csv.writer(f); w.writerow(["order_id", "customer_id", "amount"])
+    for i in range(1, 3001):
+        w.writerow([i, r.randint(1, 200), f"{r.uniform(1, 500):.2f}"])
+EOF'''
+check = '''python - <<'EOF'
+import csv, collections
+region = {r["id"]: r["region"] for r in csv.DictReader(open("/work/customers.csv"))}
+tot = collections.defaultdict(float)
+for o in csv.DictReader(open("/work/orders.csv")):
+    tot[region[o["customer_id"]]] += float(o["amount"])
+want = sorted(((k, round(v, 2)) for k, v in tot.items()), key=lambda kv: -kv[1])
+rows = list(csv.reader(open("/work/region_totals.csv")))
+assert rows[0] == ["region", "total"], rows[0]
+got = [(a, float(b)) for a, b in rows[1:]]
+assert [a for a, _ in got] == [a for a, _ in want], got
+assert all(abs(x - y) < 0.011 for (_, x), (_, y) in zip(got, want)), got
+EOF'''
+solution = '''python - <<'EOF'
+import csv, collections
+region = {r["id"]: r["region"] for r in csv.DictReader(open("/work/customers.csv"))}
+tot = collections.defaultdict(float)
+for o in csv.DictReader(open("/work/orders.csv")):
+    tot[region[o["customer_id"]]] += float(o["amount"])
+with open("/work/region_totals.csv", "w", newline="") as f:
+    w = csv.writer(f); w.writerow(["region", "total"])
+    for k, v in sorted(tot.items(), key=lambda kv: -kv[1]):
+        w.writerow([k, f"{v:.2f}"])
+EOF'''
+
+[[task]]
+id = "ini-to-json"
+category = "data"
+instruction = "Convert /work/config.ini to /work/config.json as an object of sections, each an object of keys. Convert integer values to JSON numbers and true/false (any case) to JSON booleans; keep everything else as strings."
+setup = '''cat > /work/config.ini <<'EOF'
+[server]
+host = 0.0.0.0
+port = 8080
+debug = False
+
+[database]
+url = postgres://db:5432/app
+pool = 10
+ssl = TRUE
+timeout = 2.5
+
+[features]
+beta = true
+name = 042-release
+EOF'''
+check = '''python - <<'EOF'
+import json
+want = {"server": {"host": "0.0.0.0", "port": 8080, "debug": False},
+        "database": {"url": "postgres://db:5432/app", "pool": 10, "ssl": True, "timeout": "2.5"},
+        "features": {"beta": True, "name": "042-release"}}
+got = json.load(open("/work/config.json"))
+assert got == want and type(got["server"]["debug"]) is bool and type(got["database"]["pool"]) is int, got
+EOF'''
+solution = '''python - <<'EOF'
+import configparser, json, re
+c = configparser.ConfigParser(); c.read("/work/config.ini")
+conv = lambda v: int(v) if re.fullmatch(r"-?[1-9][0-9]*|0", v) else {"true": True, "false": False}.get(v.lower(), v)
+json.dump({s: {k: conv(v) for k, v in c[s].items()} for s in c.sections()}, open("/work/config.json", "w"))
+EOF'''
+
+[[task]]
+id = "largest-files"
+category = "search"
+instruction = "Find the 3 largest files anywhere under /work/data (including hidden files and directories). Write their absolute paths to /work/largest.txt, one per line, largest first."
+setup = '''python - <<'EOF'
+import os, random
+r = random.Random(5)
+for d in ["a", "a/b", ".cache", "c/d/e", "f"]:
+    os.makedirs(f"/work/data/{d}", exist_ok=True)
+sizes = r.sample(range(1000, 900000), 40)
+for i, s in enumerate(sizes):
+    d = ["a", "a/b", ".cache", "c/d/e", "f"][i % 5]
+    name = f".h{i}" if i % 7 == 0 else f"file{i}.bin"
+    open(f"/work/data/{d}/{name}", "wb").write(b"x" * s)
+EOF'''
+check = '''python - <<'EOF'
+import os
+files = [os.path.join(d, f) for d, _, fs in os.walk("/work/data") for f in fs]
+want = sorted(files, key=os.path.getsize, reverse=True)[:3]
+assert open("/work/largest.txt").read().split() == want
+EOF'''
+solution = '''find /work/data -type f -printf '%s %p\n' | sort -rn | head -3 | cut -d' ' -f2 > /work/largest.txt'''
+
+[[task]]
+id = "emails"
+category = "search"
+instruction = "The text files under /work/mail contain email addresses. Write every distinct address, lowercased, to /work/emails.txt, one per line, sorted alphabetically."
+setup = '''
+mkdir -p /work/mail/old
+printf 'From: Ana <ana@example.com>\nCc: BOB@Example.com, carol.d+news@mail.example.org\n' > /work/mail/1.txt
+printf 'reply to bob@example.com or ana@EXAMPLE.com\nnot an email: foo@bar\n' > /work/mail/2.txt
+printf 'archived: dave_99@corp.example.net (dave)\nana@example.com\n' > /work/mail/old/3.txt
+'''
+check = '''[ "$(cat /work/emails.txt)" = "$(printf 'ana@example.com\nbob@example.com\ncarol.d+news@mail.example.org\ndave_99@corp.example.net')" ]'''
+solution = '''grep -rhoiE '[a-z0-9._+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+' /work/mail | tr 'A-Z' 'a-z' | sort -u > /work/emails.txt'''
+
+[[task]]
+id = "sqlite-query"
+category = "data"
+instruction = "/work/company.db is a SQLite database. Find the department with the highest average employee salary and write just its name to /work/answer.txt."
+setup = '''python - <<'EOF'
+import sqlite3
+c = sqlite3.connect("/work/company.db")
+c.execute("create table depts (id integer primary key, name text)")
+c.execute("create table employees (id integer primary key, name text, dept_id integer, salary integer)")
+c.executemany("insert into depts values (?, ?)", [(1, "Sales"), (2, "Research"), (3, "Support"), (4, "Legal")])
+rows = [(1, 90), (1, 50), (1, 70), (2, 85), (2, 95), (2, 60), (2, 61), (3, 40), (3, 45), (4, 120), (4, 40)]
+c.executemany("insert into employees (dept_id, salary, name) values (?, ?, 'e')", [(d, s * 1000) for d, s in rows])
+c.commit()
+EOF'''
+check = '''[ "$(tr -d '[:space:]' < /work/answer.txt)" = "Legal" ]'''
+solution = '''python -c "
+import sqlite3
+c = sqlite3.connect('/work/company.db')
+print(c.execute('select d.name from employees e join depts d on d.id = e.dept_id group by d.id order by avg(salary) desc limit 1').fetchone()[0])
+" > /work/answer.txt'''
+
+[[task]]
+id = "wordfreq-cli"
+category = "code"
+instruction = "Write /work/wordfreq.py so that `python /work/wordfreq.py FILE N` prints the N most frequent words in FILE as lines `word count`. Words are maximal runs of letters a-z, compared case-insensitively and printed lowercase. Ties are broken alphabetically."
+setup = ""
+check = '''cd /tmp && printf 'The cat and the hat.\nTHE end; and AND cat-like cats\n' > t.txt && [ "$(python /work/wordfreq.py t.txt 4)" = "$(printf 'and 3\nthe 3\ncat 2\ncats 1')" ] && [ "$(python /work/wordfreq.py t.txt 1)" = "and 3" ]'''
+solution = '''cat > /work/wordfreq.py <<'EOF'
+import collections, re, sys
+words = re.findall(r"[a-z]+", open(sys.argv[1]).read().lower())
+for w, c in sorted(collections.Counter(words).items(), key=lambda kv: (-kv[1], kv[0]))[: int(sys.argv[2])]:
+    print(w, c)
+EOF'''
+
+[[task]]
+id = "backup-script"
+category = "shell"
+instruction = "Write an executable bash script /work/backup.sh: `backup.sh SRC DEST` creates DEST/backup.tar.gz containing the contents of directory SRC (paths inside the archive relative to SRC), excluding files ending in .tmp. It creates DEST if needed. If SRC does not exist it prints an error to stderr and exits with status 1."
+setup = ""
+check = '''set -e
+mkdir -p /tmp/s/sub && echo a > /tmp/s/a.txt && echo b > /tmp/s/sub/b.txt && echo t > /tmp/s/sub/x.tmp
+/work/backup.sh /tmp/s /tmp/out/deep
+[ "$(tar -tzf /tmp/out/deep/backup.tar.gz | sed 's|^\./||' | grep -v '/$' | grep -v '^$' | sort | tr '\n' ' ')" = "a.txt sub/b.txt " ]
+if /work/backup.sh /tmp/missing /tmp/out2 2>/tmp/err; then exit 1; else [ $? -eq 1 ] && [ -s /tmp/err ]; fi'''
+solution = '''cat > /work/backup.sh <<'EOF'
+#!/bin/bash
+[ -d "$1" ] || { echo "no such directory: $1" >&2; exit 1; }
+mkdir -p "$2" && tar -czf "$2/backup.tar.gz" -C "$1" --exclude='*.tmp' .
+EOF
+chmod +x /work/backup.sh'''
+
+[[task]]
+id = "three-parts"
+category = "multi"
+instruction = "Do three independent things. (a) Write the first 50 prime numbers to /work/a/primes.txt, one per line. (b) Write the first 30 Fibonacci numbers, starting 0, 1, as a JSON list to /work/b/fib.json. (c) Write the lines of /work/c/input.txt in reverse order to /work/c/reversed.txt."
+setup = '''mkdir -p /work/a /work/b /work/c && python -c "print('\n'.join(f'line {i}' for i in range(1, 101)))" > /work/c/input.txt'''
+check = '''python - <<'EOF'
+import json
+p = [n for n in range(2, 300) if all(n % d for d in range(2, int(n ** 0.5) + 1))][:50]
+assert open("/work/a/primes.txt").read().split() == [str(x) for x in p]
+f = [0, 1]
+while len(f) < 30: f.append(f[-1] + f[-2])
+assert json.load(open("/work/b/fib.json")) == f
+assert open("/work/c/reversed.txt").read().splitlines() == open("/work/c/input.txt").read().splitlines()[::-1]
+EOF'''
+solution = '''python - <<'EOF'
+import json
+p = [n for n in range(2, 300) if all(n % d for d in range(2, int(n ** 0.5) + 1))][:50]
+open("/work/a/primes.txt", "w").write("\n".join(map(str, p)) + "\n")
+f = [0, 1]
+while len(f) < 30: f.append(f[-1] + f[-2])
+json.dump(f, open("/work/b/fib.json", "w"))
+open("/work/c/reversed.txt", "w").write("\n".join(open("/work/c/input.txt").read().splitlines()[::-1]) + "\n")
+EOF'''
+
+[[task]]
+id = "slugify-spec"
+category = "code"
+instruction = """Write /work/slugify.py with a function slugify(text) that follows ALL of these rules, in order:
+1. Convert accented letters to their ASCII base letter (é -> e) and drop any other non-ASCII characters.
+2. Lowercase.
+3. Replace every run of characters that are not a-z or 0-9 with a single hyphen.
+4. Strip leading and trailing hyphens.
+5. If longer than 40 characters, truncate to 40 and strip any trailing hyphen again.
+6. If the result is empty, return "n-a"."""
+setup = ""
+check = '''cd /work && python -c "
+from slugify import slugify as s
+assert s('Hello, World!') == 'hello-world'
+assert s('  Crème Brûlée  ') == 'creme-brulee'
+assert s('a---b___c') == 'a-b-c'
+assert s('日本語') == 'n-a' and s('!!!') == 'n-a'
+assert s('x' * 39 + ' yz') == 'x' * 39
+assert len(s('word ' * 20)) <= 40 and not s('word ' * 20).endswith('-')
+assert s('ÀB 12') == 'ab-12'
+"'''
+solution = '''cat > /work/slugify.py <<'EOF'
+import re, unicodedata
+
+
+def slugify(text):
+    s = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    s = s[:40].rstrip("-")
+    return s or "n-a"
+EOF'''
+
+[[task]]
+id = "write-tests"
+category = "code"
+instruction = "/work/inventory.py defines class Inventory. Write /work/test_inventory.py, a unittest test module that passes against the current (correct) inventory.py and that would catch bugs: it must fail if add() ignores its quantity, or if remove() allows a count to go negative instead of raising ValueError. Run it with `cd /work && python -m unittest test_inventory`."
+setup = '''cat > /work/inventory.py <<'EOF'
+class Inventory:
+    def __init__(self):
+        self.items = {}
+
+    def add(self, name, qty=1):
+        self.items[name] = self.items.get(name, 0) + qty
+
+    def remove(self, name, qty=1):
+        if self.items.get(name, 0) < qty:
+            raise ValueError(f"not enough {name}")
+        self.items[name] -= qty
+
+    def count(self, name):
+        return self.items.get(name, 0)
+EOF'''
+check = '''set -e
+cd /work && python -m unittest -q test_inventory 2>/dev/null
+for m in 's/+ qty$/+ 1/' 's/< qty:/< 0:/'; do
+  rm -rf /tmp/mut && mkdir /tmp/mut && cp /work/test_inventory.py /tmp/mut/ && sed "$m" /work/inventory.py > /tmp/mut/inventory.py
+  ! cmp -s /tmp/mut/inventory.py /work/inventory.py
+  if (cd /tmp/mut && python -m unittest -q test_inventory 2>/dev/null); then echo "mutant $m survived"; exit 1; fi
+done'''
+solution = '''cat > /work/test_inventory.py <<'EOF'
+import unittest
+from inventory import Inventory
+
+
+class T(unittest.TestCase):
+    def test_add_qty(self):
+        i = Inventory(); i.add("a", 5)
+        self.assertEqual(i.count("a"), 5)
+
+    def test_remove_too_many(self):
+        i = Inventory(); i.add("a", 2)
+        with self.assertRaises(ValueError):
+            i.remove("a", 3)
+EOF'''
+
+[[task]]
+id = "speedup"
+category = "code"
+instruction = "`python /work/slow.py` prints a number but takes far too long. Make it print the same number in under 2 seconds."
+setup = '''cat > /work/slow.py <<'EOF'
+import random
+r = random.Random(3)
+nums = [r.randint(1, 10**6) for _ in range(20000)]
+k = 97
+count = 0
+for i in range(len(nums)):
+    for j in range(i + 1, len(nums)):
+        if (nums[i] + nums[j]) % k == 0:
+            count += 1
+print(count)
+EOF'''
+check = '''want=$(python - <<'EOF'
+import collections, random
+r = random.Random(3)
+nums = [r.randint(1, 10**6) for _ in range(20000)]
+c = collections.Counter(n % 97 for n in nums)
+print(c[0] * (c[0] - 1) // 2 + sum(c[a] * c[97 - a] for a in range(1, 49)))
+EOF
+) && got=$(timeout 4 python /work/slow.py) && [ "$got" = "$want" ]'''
+solution = '''cat > /work/slow.py <<'EOF'
+import collections, random
+r = random.Random(3)
+nums = [r.randint(1, 10**6) for _ in range(20000)]
+k = 97
+c = collections.Counter(n % k for n in nums)
+print(c[0] * (c[0] - 1) // 2 + sum(c[a] * c[k - a] for a in range(1, (k + 1) // 2)))
+EOF'''
+
+[[task]]
+id = "needle-output"
+category = "search"
+instruction = "`python /work/report.py` prints a long report of lines `id=<n> checksum=<hex>`. Write the checksum for id 31337 to /work/checksum.txt."
+setup = '''cat > /work/report.py <<'EOF'
+import hashlib
+for n in range(1, 50001):
+    print(f"id={n} checksum={hashlib.sha256(str(n * 7).encode()).hexdigest()[:16]}")
+EOF'''
+check = '''[ "$(tr -d '[:space:]' < /work/checksum.txt)" = "$(python /work/report.py | grep '^id=31337 ' | cut -d= -f3)" ]'''
+solution = '''python /work/report.py | grep '^id=31337 ' | cut -d= -f3 > /work/checksum.txt'''
+
+[[task]]
+id = "import-error"
+category = "code"
+instruction = "`python /work/app/main.py` should print `ok 42` but crashes. Fix it without changing main.py."
+setup = '''mkdir -p /work/app/lib
+printf 'from lib.helpers import answer\nprint("ok", answer())\n' > /work/app/main.py
+printf 'from lib.consts import BASE\n\n\ndef answer():\n    return BASE + 2\n' > /work/app/lib/helpers.py
+'''
+check = '''[ "$(cat /work/app/main.py)" = "$(printf 'from lib.helpers import answer\nprint("ok", answer())')" ] && [ "$(cd / && python /work/app/main.py)" = "ok 42" ]'''
+solution = '''echo 'BASE = 40' > /work/app/lib/consts.py'''
