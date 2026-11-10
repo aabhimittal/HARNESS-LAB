@@ -49,6 +49,20 @@ def _finished(path):
         return False
 
 
+def grade(task, agent_sb, image=DEFAULT_IMAGE):
+    """Run the check in a fresh container: pristine inputs from a re-run of the (deterministic) setup, plus only
+    the task's declared outputs copied from the agent's container. The agent is root in its own container, so
+    anything there (input data, the python binary) could have been rigged to fool a check run in place."""
+    with Sandbox(image=task.get("image", image)) as judge:
+        if task.get("setup", "").strip():
+            rc, out = judge.exec(task["setup"])
+            if rc:
+                raise RuntimeError(f"setup failed in grader for {task['id']}: {out}")
+        copied = [p for p in task["outputs"] if agent_sb.copy_to(judge, p)]
+        rc, out = judge.exec(task["check"], timeout=CHECK_TIMEOUT_S)
+    return rc, out, copied
+
+
 def run_one(task, model_name, seed, out_dir, config=BASELINE, image=DEFAULT_IMAGE, max_steps=30):
     run_id = f"{config_name(config)}__{task['id']}__s{seed}"
     out_dir = Path(out_dir)
@@ -74,8 +88,8 @@ def run_one(task, model_name, seed, out_dir, config=BASELINE, image=DEFAULT_IMAG
             result = run_agent(make_model(model_name, task), sb, task["instruction"], trace, build(config), max_steps)
         except Exception as e:  # an API/infra error is a failed run, not a crashed experiment
             result = {"outcome": f"error: {type(e).__name__}: {e}", "steps": None, "usage": {}, "final": ""}
-        rc, out = sb.exec(task["check"], timeout=CHECK_TIMEOUT_S)
-        trace("check", exit_code=rc, output=out)
+        rc, out, copied = grade(task, sb, image)
+        trace("check", exit_code=rc, output=out, outputs_copied=copied)
         summary = {"run_id": run_id, "success": rc == 0, "wall_s": round(time.monotonic() - t0, 2), **result}
         trace("run_end", **summary)
     return {**summary, "trace": str(path)}

@@ -4,6 +4,7 @@
 
 [[task]]
 id = "log-errors"
+outputs = ["/work/errors.json"]
 category = "data"
 instruction = "/work/app.log is a service log. Count the ERROR lines per service (the name in square brackets) and write the result to /work/errors.json as a JSON object mapping service name to count."
 setup = '''python - <<'EOF'
@@ -28,6 +29,7 @@ EOF'''
 
 [[task]]
 id = "two-bugs"
+outputs = ["/work/stats.py"]
 category = "code"
 instruction = "/work/stats.py has bugs: mean() and median() give wrong answers for some inputs (median of an even-length list is the average of the two middle values). Fix them. /work/test_stats.py shows some expected behaviour."
 setup = '''
@@ -52,6 +54,7 @@ EOF'''
 
 [[task]]
 id = "csv-join"
+outputs = ["/work/region_totals.csv"]
 category = "data"
 instruction = "/work/customers.csv (id,name,region) and /work/orders.csv (order_id,customer_id,amount) are CSV files with headers. Write /work/region_totals.csv with header region,total: the total order amount per region, rounded to 2 decimals, sorted by total descending."
 setup = '''python - <<'EOF'
@@ -94,6 +97,7 @@ EOF'''
 
 [[task]]
 id = "ini-to-json"
+outputs = ["/work/config.json"]
 category = "data"
 instruction = "Convert /work/config.ini to /work/config.json as an object of sections, each an object of keys. Convert integer values to JSON numbers and true/false (any case) to JSON booleans; keep everything else as strings."
 setup = '''cat > /work/config.ini <<'EOF'
@@ -129,6 +133,7 @@ EOF'''
 
 [[task]]
 id = "largest-files"
+outputs = ["/work/largest.txt"]
 category = "search"
 instruction = "Find the 3 largest files anywhere under /work/data (including hidden files and directories). Write their absolute paths to /work/largest.txt, one per line, largest first."
 setup = '''python - <<'EOF'
@@ -152,6 +157,7 @@ solution = '''find /work/data -type f -printf '%s %p\n' | sort -rn | head -3 | c
 
 [[task]]
 id = "emails"
+outputs = ["/work/emails.txt"]
 category = "search"
 instruction = "The text files under /work/mail contain email addresses. Write every distinct address, lowercased, to /work/emails.txt, one per line, sorted alphabetically."
 setup = '''
@@ -165,6 +171,7 @@ solution = '''grep -rhoiE '[a-z0-9._+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+' /work/mail |
 
 [[task]]
 id = "sqlite-query"
+outputs = ["/work/answer.txt"]
 category = "data"
 instruction = "/work/company.db is a SQLite database. Find the department with the highest average employee salary and write just its name to /work/answer.txt."
 setup = '''python - <<'EOF'
@@ -186,6 +193,7 @@ print(c.execute('select d.name from employees e join depts d on d.id = e.dept_id
 
 [[task]]
 id = "wordfreq-cli"
+outputs = ["/work/wordfreq.py"]
 category = "code"
 instruction = "Write /work/wordfreq.py so that `python /work/wordfreq.py FILE N` prints the N most frequent words in FILE as lines `word count`. Words are maximal runs of letters a-z, compared case-insensitively and printed lowercase. Ties are broken alphabetically."
 setup = ""
@@ -199,6 +207,7 @@ EOF'''
 
 [[task]]
 id = "backup-script"
+outputs = ["/work/backup.sh"]
 category = "shell"
 instruction = "Write an executable bash script /work/backup.sh: `backup.sh SRC DEST` creates DEST/backup.tar.gz containing the contents of directory SRC (paths inside the archive relative to SRC), excluding files ending in .tmp. It creates DEST if needed. If SRC does not exist it prints an error to stderr and exits with status 1."
 setup = ""
@@ -216,6 +225,7 @@ chmod +x /work/backup.sh'''
 
 [[task]]
 id = "three-parts"
+outputs = ["/work/a/primes.txt", "/work/b/fib.json", "/work/c/reversed.txt"]
 category = "multi"
 instruction = "Do three independent things. (a) Write the first 50 prime numbers to /work/a/primes.txt, one per line. (b) Write the first 30 Fibonacci numbers, starting 0, 1, as a JSON list to /work/b/fib.json. (c) Write the lines of /work/c/input.txt in reverse order to /work/c/reversed.txt."
 setup = '''mkdir -p /work/a /work/b /work/c && python -c "print('\n'.join(f'line {i}' for i in range(1, 101)))" > /work/c/input.txt'''
@@ -240,6 +250,7 @@ EOF'''
 
 [[task]]
 id = "slugify-spec"
+outputs = ["/work/slugify.py"]
 category = "code"
 instruction = """Write /work/slugify.py with a function slugify(text) that follows ALL of these rules, in order:
 1. Convert accented letters to their ASCII base letter (é -> e) and drop any other non-ASCII characters.
@@ -272,6 +283,7 @@ EOF'''
 
 [[task]]
 id = "write-tests"
+outputs = ["/work/test_inventory.py"]
 category = "code"
 instruction = "/work/inventory.py defines class Inventory. Write /work/test_inventory.py, a unittest test module that passes against the current (correct) inventory.py and that would catch bugs: it must fail if add() ignores its quantity, or if remove() allows a count to go negative instead of raising ValueError. Run it with `cd /work && python -m unittest test_inventory`."
 setup = '''cat > /work/inventory.py <<'EOF'
@@ -315,6 +327,7 @@ EOF'''
 
 [[task]]
 id = "speedup"
+outputs = ["/work/slow.py"]
 category = "code"
 instruction = "`python /work/slow.py` prints a number but takes far too long. Make it print the same number in under 2 seconds."
 setup = '''cat > /work/slow.py <<'EOF'
@@ -348,6 +361,7 @@ EOF'''
 
 [[task]]
 id = "needle-output"
+outputs = ["/work/checksum.txt"]
 category = "search"
 instruction = "`python /work/report.py` prints a long report of lines `id=<n> checksum=<hex>`. Write the checksum for id 31337 to /work/checksum.txt."
 setup = '''cat > /work/report.py <<'EOF'
@@ -360,6 +374,7 @@ solution = '''python /work/report.py | grep '^id=31337 ' | cut -d= -f3 > /work/c
 
 [[task]]
 id = "import-error"
+outputs = ["/work/app/lib"]
 category = "code"
 instruction = "`python /work/app/main.py` should print `ok 42` but crashes. Fix it without changing main.py."
 setup = '''mkdir -p /work/app/lib

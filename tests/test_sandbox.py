@@ -73,6 +73,15 @@ def test_file_roundtrip_and_missing_file():
             sb.read_file("/work/nope.txt")
 
 
+def test_copy_to_another_sandbox():
+    with Sandbox() as a, Sandbox() as b:
+        a.write_file("/work/out/x/y.txt", "deep")
+        a.write_file("/work/f.txt", "flat")
+        assert a.copy_to(b, "/work/out") and a.copy_to(b, "/work/f.txt")
+        assert b.read_file("/work/out/x/y.txt") == "deep" and b.read_file("/work/f.txt") == "flat"
+        assert not a.copy_to(b, "/work/missing")
+
+
 def test_runs_are_isolated():
     with Sandbox() as sb:
         sb.write_file("/work/x", "1")

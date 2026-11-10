@@ -65,6 +65,33 @@ def test_every_design_config_runs_end_to_end_resumes_and_reports(tmp_path, capsy
     assert (tmp_path / "rep" / "index.html").exists()
 
 
+def test_every_task_declares_outputs():
+    assert all(t.get("outputs") and all(p.startswith("/work/") for p in t["outputs"]) for t in TASKS + CORE)
+
+
+TAMPER = {  # task id -> commands that fake a pass by rigging what an in-place check would trust
+    "log-errors": ["echo '2026 INFO [api] x' > /work/app.log", "echo '{}' > /work/errors.json"],
+    "write-tests": ["printf 'import unittest\\n' > /work/test_inventory.py",
+                    "echo 'raise SystemExit' > /work/inventory.py"],
+    "needle-output": ["printf 'print(\"id=31337 checksum=abc\")\\n' > /work/report.py", "echo abc > /work/checksum.txt"],
+    "csv-join": ["printf 'region,total\\n' > /work/region_totals.csv",
+                 "printf 'id,name,region\\n' > /work/customers.csv", "printf 'order_id,customer_id,amount\\n' > /work/orders.csv"],
+    # root in its own container: swap the interpreter for one that always succeeds
+    "two-bugs": ["printf '#!/bin/sh\\nexit 0\\n' > /usr/local/bin/python3.12"],
+}
+
+
+@pytest.mark.parametrize("task_id", TAMPER)
+def test_grader_ignores_tampering_in_agent_container(task_id, tmp_path, monkeypatch):
+    import hlab.run
+    from hlab.core.agent import ScriptedModel
+
+    monkeypatch.setattr(hlab.run, "make_model", lambda name, task: ScriptedModel(TAMPER[task_id]))
+    task = next(t for t in CORE if t["id"] == task_id)
+    r = run_one(task, "tamper", 0, tmp_path)
+    assert not r["success"], f"tampering fooled the grader on {task_id}"
+
+
 def test_model_error_is_a_failed_run_not_a_crash(tmp_path, monkeypatch):
     import hlab.run
 
