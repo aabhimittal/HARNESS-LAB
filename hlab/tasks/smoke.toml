@@ -21,7 +21,7 @@ setup = '''
 printf 'def add(a, b):\n    return a - b\n' > /work/calc.py
 printf 'from calc import add\nassert add(2, 3) == 5\nassert add(-1, 1) == 0\nprint("ok")\n' > /work/test_calc.py
 '''
-check = '''cd /work && grep -q 'assert add(2, 3) == 5' test_calc.py && python test_calc.py'''
+check = '''[ "$(cd /work && untrusted python -c 'from calc import add; print(add(2, 3), add(-1, 1), add(10, 5))')" = "5 0 15" ]'''
 solution = '''sed -i 's/a - b/a + b/' /work/calc.py'''
 
 [[task]]

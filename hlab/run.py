@@ -7,6 +7,7 @@ Runs whose trace already ends in run_end are skipped, so an interrupted sweep re
 """
 import argparse
 import json
+import shlex
 import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +21,10 @@ from hlab.sandbox import DEFAULT_IMAGE, Sandbox
 TASKS_DIR = Path(__file__).parent / "tasks"
 CHECK_TIMEOUT_S = 300
 BASELINE = {f: -1 for f in FACTORS}
+# Checks run agent code through `untrusted`: as nobody, unable to regain root via setuid, so it can't rewrite the
+# root-owned inputs or interpreter. Checks must decide pass/fail in trusted code, never by agent code's exit status
+# alone (it could just call os._exit(0)), except where that status is the thing being graded (write-tests).
+UNTRUSTED = 'umask 022\nuntrusted() { setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs -- "$@"; }\n'
 
 
 def load_tasks(suite="smoke"):
@@ -59,7 +64,12 @@ def grade(task, agent_sb, image=DEFAULT_IMAGE):
             if rc:
                 raise RuntimeError(f"setup failed in grader for {task['id']}: {out}")
         copied = [p for p in task["outputs"] if agent_sb.copy_to(judge, p)]
-        rc, out = judge.exec(task["check"], timeout=CHECK_TIMEOUT_S)
+        for p in copied:  # a symlinked output could point the check at a pristine file
+            if judge.exec(f"find {shlex.quote(p)} -type l | head -1")[1].strip():
+                return 1, f"rejected: {p} is or contains a symlink", copied
+        # docker exec may run with umask 0, leaving setup's files world-writable to the untrusted user.
+        judge.exec("chown -R root:root /work && chmod -R go-w,-s /work")
+        rc, out = judge.exec(UNTRUSTED + task["check"], timeout=CHECK_TIMEOUT_S)
     return rc, out, copied
 
 

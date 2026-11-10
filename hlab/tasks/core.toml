@@ -1,6 +1,8 @@
 # Core suite: harder than smoke, chosen so harness factors have something to bite on (huge outputs, many
 # requirements, independent subtasks, tests to write, exact formats). Same schema as smoke.toml.
 # Checks recompute answers from the task's own data where possible, so they don't hardcode generator output.
+# Checks run in a fresh grader container (see hlab/run.py grade). Run agent code there only via `untrusted`
+# (drops root) and decide pass/fail in trusted code: agent code's exit status alone proves nothing.
 
 [[task]]
 id = "log-errors"
@@ -36,11 +38,11 @@ setup = '''
 printf 'def mean(xs):\n    return sum(xs) // len(xs)\n\n\ndef median(xs):\n    s = sorted(xs)\n    return s[len(s) // 2]\n' > /work/stats.py
 printf 'from stats import mean, median\nassert mean([1, 2, 3]) == 2\nassert median([3, 1, 2]) == 2\nprint("ok")\n' > /work/test_stats.py
 '''
-check = '''cd /work && python -c "
+check = '''out=$(cd /work && untrusted python -c "
+import json
 from stats import mean, median
-assert mean([1, 2]) == 1.5 and mean([5]) == 5
-assert median([3, 1, 2]) == 2 and median([4, 1, 3, 2]) == 2.5 and median([7]) == 7
-"'''
+print(json.dumps([mean([1, 2]), mean([5]), median([3, 1, 2]), median([4, 1, 3, 2]), median([7])]))
+") && python -c "import json, sys; g = json.loads(sys.argv[1]); assert g == [1.5, 5, 2, 2.5, 7], g" "$out"'''
 solution = '''cat > /work/stats.py <<'EOF'
 def mean(xs):
     return sum(xs) / len(xs)
@@ -197,7 +199,7 @@ outputs = ["/work/wordfreq.py"]
 category = "code"
 instruction = "Write /work/wordfreq.py so that `python /work/wordfreq.py FILE N` prints the N most frequent words in FILE as lines `word count`. Words are maximal runs of letters a-z, compared case-insensitively and printed lowercase. Ties are broken alphabetically."
 setup = ""
-check = '''cd /tmp && printf 'The cat and the hat.\nTHE end; and AND cat-like cats\n' > t.txt && [ "$(python /work/wordfreq.py t.txt 4)" = "$(printf 'and 3\nthe 3\ncat 2\ncats 1')" ] && [ "$(python /work/wordfreq.py t.txt 1)" = "and 3" ]'''
+check = '''cd /tmp && printf 'The cat and the hat.\nTHE end; and AND cat-like cats\n' > t.txt && [ "$(untrusted python /work/wordfreq.py t.txt 4)" = "$(printf 'and 3\nthe 3\ncat 2\ncats 1')" ] && [ "$(untrusted python /work/wordfreq.py t.txt 1)" = "and 3" ]'''
 solution = '''cat > /work/wordfreq.py <<'EOF'
 import collections, re, sys
 words = re.findall(r"[a-z]+", open(sys.argv[1]).read().lower())
@@ -213,9 +215,9 @@ instruction = "Write an executable bash script /work/backup.sh: `backup.sh SRC D
 setup = ""
 check = '''set -e
 mkdir -p /tmp/s/sub && echo a > /tmp/s/a.txt && echo b > /tmp/s/sub/b.txt && echo t > /tmp/s/sub/x.tmp
-/work/backup.sh /tmp/s /tmp/out/deep
+untrusted /work/backup.sh /tmp/s /tmp/out/deep
 [ "$(tar -tzf /tmp/out/deep/backup.tar.gz | sed 's|^\./||' | grep -v '/$' | grep -v '^$' | sort | tr '\n' ' ')" = "a.txt sub/b.txt " ]
-if /work/backup.sh /tmp/missing /tmp/out2 2>/tmp/err; then exit 1; else [ $? -eq 1 ] && [ -s /tmp/err ]; fi'''
+if untrusted /work/backup.sh /tmp/missing /tmp/out2 2>/tmp/err; then exit 1; else [ $? -eq 1 ] && [ -s /tmp/err ]; fi'''
 solution = '''cat > /work/backup.sh <<'EOF'
 #!/bin/bash
 [ -d "$1" ] || { echo "no such directory: $1" >&2; exit 1; }
@@ -260,16 +262,16 @@ instruction = """Write /work/slugify.py with a function slugify(text) that follo
 5. If longer than 40 characters, truncate to 40 and strip any trailing hyphen again.
 6. If the result is empty, return "n-a"."""
 setup = ""
-check = '''cd /work && python -c "
+check = '''out=$(cd /work && untrusted python -c "
+import json
 from slugify import slugify as s
-assert s('Hello, World!') == 'hello-world'
-assert s('  Crème Brûlée  ') == 'creme-brulee'
-assert s('a---b___c') == 'a-b-c'
-assert s('日本語') == 'n-a' and s('!!!') == 'n-a'
-assert s('x' * 39 + ' yz') == 'x' * 39
-assert len(s('word ' * 20)) <= 40 and not s('word ' * 20).endswith('-')
-assert s('ÀB 12') == 'ab-12'
-"'''
+print(json.dumps([s('Hello, World!'), s('  Crème Brûlée  '), s('a---b___c'), s('日本語'), s('!!!'), s('x' * 39 + ' yz'), s('word ' * 20), s('ÀB 12')]))
+") && python -c "
+import json, sys
+g = json.loads(sys.argv[1])
+assert g[:6] == ['hello-world', 'creme-brulee', 'a-b-c', 'n-a', 'n-a', 'x' * 39], g
+assert len(g[6]) <= 40 and g[6].startswith('word-word') and not g[6].endswith('-') and g[7] == 'ab-12', g
+" "$out"'''
 solution = '''cat > /work/slugify.py <<'EOF'
 import re, unicodedata
 
@@ -303,11 +305,11 @@ class Inventory:
         return self.items.get(name, 0)
 EOF'''
 check = '''set -e
-cd /work && python -m unittest -q test_inventory 2>/dev/null
+cd /work && untrusted python -m unittest -q test_inventory 2>/dev/null
 for m in 's/+ qty$/+ 1/' 's/< qty:/< 0:/'; do
   rm -rf /tmp/mut && mkdir /tmp/mut && cp /work/test_inventory.py /tmp/mut/ && sed "$m" /work/inventory.py > /tmp/mut/inventory.py
   ! cmp -s /tmp/mut/inventory.py /work/inventory.py
-  if (cd /tmp/mut && python -m unittest -q test_inventory 2>/dev/null); then echo "mutant $m survived"; exit 1; fi
+  if (cd /tmp/mut && untrusted python -m unittest -q test_inventory 2>/dev/null); then echo "mutant $m survived"; exit 1; fi
 done'''
 solution = '''cat > /work/test_inventory.py <<'EOF'
 import unittest
@@ -349,7 +351,7 @@ nums = [r.randint(1, 10**6) for _ in range(20000)]
 c = collections.Counter(n % 97 for n in nums)
 print(c[0] * (c[0] - 1) // 2 + sum(c[a] * c[97 - a] for a in range(1, 49)))
 EOF
-) && got=$(timeout 4 python /work/slow.py) && [ "$got" = "$want" ]'''
+) && got=$(timeout 4 setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs -- python /work/slow.py) && [ "$got" = "$want" ]'''
 solution = '''cat > /work/slow.py <<'EOF'
 import collections, random
 r = random.Random(3)
@@ -381,5 +383,5 @@ setup = '''mkdir -p /work/app/lib
 printf 'from lib.helpers import answer\nprint("ok", answer())\n' > /work/app/main.py
 printf 'from lib.consts import BASE\n\n\ndef answer():\n    return BASE + 2\n' > /work/app/lib/helpers.py
 '''
-check = '''[ "$(cat /work/app/main.py)" = "$(printf 'from lib.helpers import answer\nprint("ok", answer())')" ] && [ "$(cd / && python /work/app/main.py)" = "ok 42" ]'''
+check = '''[ "$(cat /work/app/main.py)" = "$(printf 'from lib.helpers import answer\nprint("ok", answer())')" ] && [ "$(cd / && untrusted python /work/app/main.py)" = "ok 42" ]'''
 solution = '''echo 'BASE = 40' > /work/app/lib/consts.py'''

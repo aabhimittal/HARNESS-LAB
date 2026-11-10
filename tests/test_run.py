@@ -78,6 +78,10 @@ TAMPER = {  # task id -> commands that fake a pass by rigging what an in-place c
                  "printf 'id,name,region\\n' > /work/customers.csv", "printf 'order_id,customer_id,amount\\n' > /work/orders.csv"],
     # root in its own container: swap the interpreter for one that always succeeds
     "two-bugs": ["printf '#!/bin/sh\\nexit 0\\n' > /usr/local/bin/python3.12"],
+    # agent code that exits 0 as soon as the check imports it
+    "fix-bug": ["printf 'import os\\nos._exit(0)\\n' > /work/calc.py"],
+    "slugify-spec": ["printf 'import os\\nos._exit(0)\\n' > /work/slugify.py"],
+    "speedup": ["printf 'import os\\nos._exit(0)\\n' > /work/slow.py"],
 }
 
 
@@ -87,9 +91,26 @@ def test_grader_ignores_tampering_in_agent_container(task_id, tmp_path, monkeypa
     from hlab.core.agent import ScriptedModel
 
     monkeypatch.setattr(hlab.run, "make_model", lambda name, task: ScriptedModel(TAMPER[task_id]))
-    task = next(t for t in CORE if t["id"] == task_id)
+    task = next(t for t in TASKS + CORE if t["id"] == task_id)
     r = run_one(task, "tamper", 0, tmp_path)
     assert not r["success"], f"tampering fooled the grader on {task_id}"
+
+
+def test_grader_rejects_symlinked_outputs_and_untrusted_code_cannot_touch_inputs(tmp_path, monkeypatch):
+    import hlab.run
+    from hlab.core.agent import ScriptedModel
+
+    task = {"id": "probe", "instruction": "", "setup": "echo secret > /work/expected.txt", "outputs": ["/work/out.txt"],
+            "check": '[ "$(cat /work/out.txt)" = secret ]', "solution": "cp /work/expected.txt /work/out.txt"}
+    real = hlab.run.make_model
+    monkeypatch.setattr(hlab.run, "make_model", lambda name, t: ScriptedModel(["ln -s /work/expected.txt /work/out.txt"])
+                        if name == "symlink" else real(name, t))
+    r = run_one(task, "symlink", 0, tmp_path / "a")
+    assert not r["success"] and "symlink" in _events(r["trace"])[-2]["output"]
+    assert run_one(task, "oracle", 0, tmp_path / "b")["success"]  # the honest copy passes
+    guard = {**task, "check": "untrusted sh -c 'echo hacked > /work/expected.txt' 2>/dev/null; "
+                              "[ \"$(cat /work/expected.txt)\" = secret ] && [ \"$(untrusted id -u)\" = 65534 ]"}
+    assert run_one(guard, "oracle", 0, tmp_path / "c")["success"]
 
 
 def test_model_error_is_a_failed_run_not_a_crash(tmp_path, monkeypatch):
