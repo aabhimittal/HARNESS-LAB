@@ -1,0 +1,18 @@
+[project]
+name = "hlab"
+version = "0.0.1"
+description = "HARNESS-LAB: component-level causal attribution for agent harnesses"
+requires-python = ">=3.11"
+dependencies = ["anthropic>=2.6"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["hlab*"]
+
+[tool.setuptools.package-data]
+hlab = ["tasks/*.toml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
